@@ -17,8 +17,9 @@ import {
     FormMessage,
 } from "@/components/ui/form"
 import { Input } from "@/components/ui/input"
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
+import { Card, CardContent, CardHeader } from "@/components/ui/card"
 import { toast } from "sonner"
+import { ArrowLeft, Gavel } from "lucide-react"
 
 const formSchema = z.object({
     email: z.string().email({
@@ -65,54 +66,71 @@ export default function LoginPage() {
     }
 
     return (
-        <Card>
-            <CardHeader>
-                <CardTitle>Sign in</CardTitle>
-                <CardDescription>
-                    Enter your email and password to sign in
-                </CardDescription>
-            </CardHeader>
-            <CardContent>
-                <Form {...form}>
-                    <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4">
-                        <FormField
-                            control={form.control}
-                            name="email"
-                            render={({ field }) => (
-                                <FormItem>
-                                    <FormLabel>Email</FormLabel>
-                                    <FormControl>
-                                        <Input placeholder="john@example.com" {...field} />
-                                    </FormControl>
-                                    <FormMessage />
-                                </FormItem>
-                            )}
-                        />
-                        <FormField
-                            control={form.control}
-                            name="password"
-                            render={({ field }) => (
-                                <FormItem>
-                                    <FormLabel>Password</FormLabel>
-                                    <FormControl>
-                                        <Input type="password" {...field} />
-                                    </FormControl>
-                                    <FormMessage />
-                                </FormItem>
-                            )}
-                        />
-                        <Button type="submit" className="w-full" disabled={isLoading}>
-                            {isLoading ? "Signing in..." : "Sign in"}
-                        </Button>
-                    </form>
-                </Form>
-                <div className="mt-4 text-center text-sm">
-                    Don&apos;t have an account?{" "}
-                    <Link href="/register" className="underline">
-                        Sign up
-                    </Link>
+        <div className="space-y-8">
+            <Link href="/" className="inline-flex items-center text-sm text-muted-foreground hover:text-white transition-colors absolute top-8 left-8 md:static md:mb-0">
+                <ArrowLeft className="mr-2 h-4 w-4" />
+                Back to Home
+            </Link>
+
+            <div className="flex flex-col items-center space-y-2 text-center mb-8">
+                <div className="h-12 w-12 rounded-xl bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center shadow-lg shadow-indigo-500/20 mb-4">
+                    <Gavel className="h-6 w-6 text-white" />
                 </div>
-            </CardContent>
-        </Card>
+                <h1 className="text-3xl font-bold tracking-tight text-white">Welcome back</h1>
+                <p className="text-muted-foreground">Enter your credentials to access your account</p>
+            </div>
+
+            <Card className="border-0 bg-white/5 backdrop-blur-2xl shadow-2xl ring-1 ring-white/10">
+                <CardContent className="pt-6">
+                    <Form {...form}>
+                        <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-5">
+                            <FormField
+                                control={form.control}
+                                name="email"
+                                render={({ field }) => (
+                                    <FormItem>
+                                        <FormLabel className="text-zinc-400">Email</FormLabel>
+                                        <FormControl>
+                                            <Input
+                                                placeholder="name@example.com"
+                                                {...field}
+                                                className="bg-black/20 border-white/5 focus:border-indigo-500/50 focus:bg-black/40 transition-all h-11"
+                                            />
+                                        </FormControl>
+                                        <FormMessage />
+                                    </FormItem>
+                                )}
+                            />
+                            <FormField
+                                control={form.control}
+                                name="password"
+                                render={({ field }) => (
+                                    <FormItem>
+                                        <FormLabel className="text-zinc-400">Password</FormLabel>
+                                        <FormControl>
+                                            <Input
+                                                type="password"
+                                                {...field}
+                                                className="bg-black/20 border-white/5 focus:border-indigo-500/50 focus:bg-black/40 transition-all h-11"
+                                            />
+                                        </FormControl>
+                                        <FormMessage />
+                                    </FormItem>
+                                )}
+                            />
+                            <Button type="submit" className="w-full h-11 text-base" variant="gradient" disabled={isLoading}>
+                                {isLoading ? "Signing in..." : "Sign in"}
+                            </Button>
+                        </form>
+                    </Form>
+                    <div className="mt-6 text-center text-sm text-muted-foreground">
+                        Don&apos;t have an account?{" "}
+                        <Link href="/register" className="text-indigo-400 hover:text-indigo-300 font-medium hover:underline underline-offset-4 transition-colors">
+                            Sign up
+                        </Link>
+                    </div>
+                </CardContent>
+            </Card>
+        </div>
     )
 }

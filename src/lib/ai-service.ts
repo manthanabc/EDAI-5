@@ -1,12 +1,13 @@
 import { GoogleGenerativeAI } from "@google/generative-ai"
 import fs from "fs/promises"
 import path from "path"
+import { ragService } from "./rag-utils"
 
 // @ts-ignore
 const pdf = require("pdf-parse")
 
 // Mocked AI Service for ODR Platform
-// Now integrated with Gemini API
+// Now integrated with OpenRouter and RAG
 
 interface VerdictResult {
     content: string
@@ -17,43 +18,84 @@ interface VerdictResult {
     error?: boolean
 }
 
+import { prisma } from "@/lib/prisma"
 
 export class AIService {
-    private genAI: GoogleGenerativeAI
-    private model: any
+    private openRouterApiKey: string = ""
 
     constructor() {
-        const apiKey = process.env.GEMINI_API_KEY || ""
-        this.genAI = new GoogleGenerativeAI(apiKey)
-        this.model = this.genAI.getGenerativeModel({ model: "gemini-2.0-flash-lite" })
+        // Initial load from env, but will be overridden by DB config if present
+        this.openRouterApiKey = process.env.OPENROUTER_API_KEY || ""
     }
 
-    // Simulate RAG - Retrieval Augmented Generation
-    private async retrieveContext(caseTitle: string, description: string): Promise<string> {
-        let context = ""
+    private async getConfig() {
         try {
-            const guidelinesPath = path.join(process.cwd(), "src/lib/guidelines/standard-rules.md")
-            const guidelines = await fs.readFile(guidelinesPath, "utf-8")
-            context = `
-            Standard Arbitration Rules:
-            ${guidelines}
-            `
+            const settings = await prisma.systemSettings.findUnique({
+                where: { key: "ai_config" }
+            })
+            if (settings) {
+                const config = JSON.parse(settings.value)
+                if (config.apiKey) {
+                    this.openRouterApiKey = config.apiKey
+                }
+                return config
+            }
         } catch (error) {
-            console.error("Error reading guidelines:", error)
-            context = "Standard arbitration rules could not be loaded."
+            console.error("Failed to load AI config from DB", error)
         }
-        return context
+        return null
     }
 
-    // Helper to load evidence files for multimodal input
-    private async loadEvidence(documents: any[]): Promise<any[]> {
-        const parts: any[] = []
-        if (!documents) return parts
+    // Helper to call OpenRouter
+    private async callOpenRouter(model: string, messages: any[], temperature: number = 0.7): Promise<string> {
+        // Ensure config is loaded
+        await this.getConfig()
+
+        if (!this.openRouterApiKey) {
+            console.error("OPENROUTER_API_KEY is missing")
+            throw new Error("Configuration Missing: Please set the OpenRouter API Key in Admin Settings.")
+        }
+
+        try {
+            const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+                method: "POST",
+                headers: {
+                    "Authorization": `Bearer ${this.openRouterApiKey}`,
+                    "Content-Type": "application/json",
+                    "HTTP-Referer": "https://odr-platform.com", // Site URL for rankings
+                    "X-Title": "ODR Platform", // Site title for rankings
+                },
+                body: JSON.stringify({
+                    model: model,
+                    messages: messages,
+                    temperature: temperature,
+                })
+            })
+
+            if (!response.ok) {
+                const errorBody = await response.text()
+                console.error(`OpenRouter API Error (${response.status}):`, errorBody)
+                throw new Error(`OpenRouter API Error: ${response.statusText}`)
+            }
+
+            const data = await response.json()
+            return data.choices[0]?.message?.content || ""
+        } catch (error) {
+            console.error("Call OpenRouter Failed:", error)
+            throw error
+        }
+    }
+
+    // Helper to load evidence files for multimodal input (if model supports it - simplified for text-based OpenRouter for now)
+    // Note: Many OpenRouter models support image URLs. For local files, we'd need to upload them or base64 encode them.
+    // For this implementation, we will focus on text context from RAG and metadata about files.
+    // If we want to support images with OpenRouter, we need to base64 encode them in the message content.
+    private async loadEvidenceAsBase64(documents: any[]): Promise<any[]> {
+        const images: any[] = []
+        if (!documents) return images
 
         for (const doc of documents) {
             try {
-                // Construct local path. doc.url is like "/uploads/123_file.jpg"
-                // Remove leading slash to join correctly
                 const relativePath = doc.url.startsWith("/") ? doc.url.slice(1) : doc.url
                 const localPath = path.join(process.cwd(), "public", relativePath)
 
@@ -61,17 +103,13 @@ export class AIService {
                 await fs.access(localPath)
 
                 const fileBuffer = await fs.readFile(localPath)
-                // Default to image/jpeg if type is missing, but try to use doc.type
                 const mimeType = doc.type || "image/jpeg"
 
-                // Only add supported types (images for now, Gemini supports images)
-                // We can also support PDF if the model supports it (Gemini 1.5 Pro does, Flash Lite might)
-                // For now, let's focus on images as requested.
                 if (mimeType.startsWith("image/")) {
-                    parts.push({
-                        inlineData: {
-                            data: fileBuffer.toString("base64"),
-                            mimeType: mimeType
+                    images.push({
+                        type: "image_url",
+                        image_url: {
+                            url: `data:${mimeType};base64,${fileBuffer.toString("base64")}`
                         }
                     })
                 }
@@ -79,7 +117,7 @@ export class AIService {
                 console.error(`Error loading evidence ${doc.name}:`, error)
             }
         }
-        return parts
+        return images
     }
 
     // Helper to extract JSON from text
@@ -104,30 +142,17 @@ export class AIService {
         }
     }
 
-    // Real Large LLM - Verdict Generation
-    private async generateVerdict(context: string, caseDetails: any): Promise<{ content: string; reasoning: string; citations: string[]; error?: boolean }> {
-        const promptText = `
+    // Verdict Generation
+    private async generateVerdict(context: string, caseDetails: any, model: string): Promise<{ content: string; reasoning: string; citations: string[]; error?: boolean }> {
+        const systemPrompt = `
         You are an AI Arbitrator. Your job is to decide a dispute based on the provided context, case details, and VISUAL EVIDENCE.
         
-        Context (Legal Guidelines):
+        Context (Legal Guidelines & RAG Retrieval):
         ${context}
-
-        Case Details:
-        Title: ${caseDetails.title}
-        
-        Normalized Analysis:
-        Claimant Arguments: ${JSON.stringify(caseDetails.analysis?.claimantArguments)}
-        Respondent Arguments: ${JSON.stringify(caseDetails.analysis?.respondentArguments)}
-
-        Original Description (Claimant): ${caseDetails.description}
-        Original Response (Respondent): ${caseDetails.respondentDescription || "No response provided."}
-        
-        Evidence Files (Metadata):
-        ${caseDetails.documents?.map((d: any) => `- ${d.name} (${d.type})`).join("\n") || "No evidence uploaded."}
 
         Task:
         1. Analyze the case based on the guidelines and the normalized arguments.
-        2. EXAMINE THE PROVIDED IMAGES (if any) as evidence. They are attached to this request.
+        2. EXAMINE THE PROVIDED IMAGES (if any) as evidence.
         3. Provide a clear verdict (In favor of Claimant or Respondent).
         4. Provide a detailed reasoning.
         5. Cite specific rules from the guidelines that support your decision.
@@ -140,19 +165,37 @@ export class AIService {
         }
         `
 
+        const userContent = `
+        Case Details:
+        Title: ${caseDetails.title}
+        
+        Normalized Analysis:
+        Claimant Arguments: ${JSON.stringify(caseDetails.analysis?.claimantArguments)}
+        Respondent Arguments: ${JSON.stringify(caseDetails.analysis?.respondentArguments)}
+
+        Original Description (Claimant): ${caseDetails.description}
+        Original Response (Respondent): ${caseDetails.respondentDescription || "No response provided."}
+        
+        Evidence Files (Metadata):
+        ${caseDetails.documents?.map((d: any) => `- ${d.name} (${d.type})`).join("\n") || "No evidence uploaded."}
+        `
+
         try {
             // Load evidence images
-            const evidenceParts = await this.loadEvidence(caseDetails.documents)
+            const evidenceImages = await this.loadEvidenceAsBase64(caseDetails.documents)
 
-            // Construct multimodal request
-            const parts = [
-                { text: promptText },
-                ...evidenceParts
+            const messages = [
+                { role: "system", content: systemPrompt },
+                {
+                    role: "user",
+                    content: [
+                        { type: "text", text: userContent },
+                        ...evidenceImages
+                    ]
+                }
             ]
 
-            const result = await this.model.generateContent(parts)
-            const response = result.response
-            const text = response.text()
+            const text = await this.callOpenRouter(model, messages)
 
             try {
                 return this.extractJson(text)
@@ -160,11 +203,10 @@ export class AIService {
                 console.error("JSON Parse Error:", parseError)
                 console.log("Raw Text:", text)
 
-                // Check for refusal
                 if (text.toLowerCase().includes("unable to") || text.toLowerCase().includes("i cannot")) {
                     return {
                         content: "Verdict: AI Refusal",
-                        reasoning: "The AI model refused to process this case, likely due to safety filters or content policy restrictions regarding the evidence provided.",
+                        reasoning: "The AI model refused to process this case.",
                         citations: [],
                         error: true
                     }
@@ -172,25 +214,34 @@ export class AIService {
 
                 return {
                     content: "Verdict: Parsing Error",
-                    reasoning: "The AI generated a response that could not be parsed. Please try again.",
+                    reasoning: "The AI generated a response that could not be parsed.",
                     citations: [],
                     error: true
                 }
             }
         } catch (error) {
-            console.error("Gemini API Error (Verdict):", error)
-            // Fallback to mock if API fails
+            console.error("OpenRouter API Error (Verdict):", error)
+            // @ts-ignore
+            if (error.message) console.error("Error Message:", error.message)
+            // @ts-ignore
+            if (error.stack) console.error("Error Stack:", error.stack)
+
+            // @ts-ignore
+            const errorMessage = error.message || "Unknown error"
+
             return {
-                content: "Verdict: Unable to generate at this time.",
-                reasoning: "AI Service is currently unavailable.",
+                content: "Verdict: Configuration Required",
+                reasoning: errorMessage.includes("Configuration Missing")
+                    ? "The AI Arbitrator is not configured. Please ask an Admin to set the OpenRouter API Key in the Settings page."
+                    : `AI Service is currently unavailable. Error details: ${errorMessage}`,
                 citations: [],
                 error: true
             }
         }
     }
 
-    // Real Small LLM - Bias/Fallacy Check
-    private async checkBias(verdict: string, reasoning: string): Promise<{ passed: boolean; reasoning: string }> {
+    // Bias/Fallacy Check
+    private async checkBias(verdict: string, reasoning: string, model: string): Promise<{ passed: boolean; reasoning: string }> {
         const prompt = `
         You are an AI Bias Auditor. Check the following verdict and reasoning for logical fallacies or bias.
 
@@ -210,15 +261,11 @@ export class AIService {
         `
 
         try {
-            const result = await this.model.generateContent(prompt)
-            const response = result.response
-            const text = response.text()
-            // Clean up markdown code blocks if present
+            const text = await this.callOpenRouter(model, [{ role: "user", content: prompt }])
             const cleanText = text.replace(/```json/g, "").replace(/```/g, "").trim()
-
             return JSON.parse(cleanText)
         } catch (error) {
-            console.error("Gemini API Error (Bias Check):", error)
+            console.error("OpenRouter API Error (Bias Check):", error)
             return {
                 passed: true,
                 reasoning: "Bias check skipped due to service unavailability."
@@ -226,13 +273,13 @@ export class AIService {
         }
     }
 
-    // Normalization Layer - Rephrase and Structure Arguments
-    public async normalizeClaims(caseData: any): Promise<{ claimantArguments: any[]; respondentArguments: any[] }> {
-        const promptText = `
+    // Normalization Layer
+    public async normalizeClaims(caseData: any, model: string = "google/gemini-2.0-flash-lite-preview"): Promise<{ claimantArguments: any[]; respondentArguments: any[] }> {
+        const systemPrompt = `
         You are an AI Case Analyst. Your job is to read the raw descriptions from both the Claimant and the Respondent and normalize them into structured arguments.
-        
-        You also have access to VISUAL EVIDENCE (images) attached to this request.
+        `
 
+        const userContent = `
         Case Title: ${caseData.title}
         
         Claimant's Description:
@@ -263,39 +310,60 @@ export class AIService {
         `
 
         try {
-            // Load evidence images
-            const evidenceParts = await this.loadEvidence(caseData.documents)
+            const evidenceImages = await this.loadEvidenceAsBase64(caseData.documents)
 
-            // Construct multimodal request
-            const parts = [
-                { text: promptText },
-                ...evidenceParts
+            const messages = [
+                { role: "system", content: systemPrompt },
+                {
+                    role: "user",
+                    content: [
+                        { type: "text", text: userContent },
+                        ...evidenceImages
+                    ]
+                }
             ]
 
-            const result = await this.model.generateContent(parts)
-            const response = result.response
-            const text = response.text()
+            const text = await this.callOpenRouter(model, messages)
             const cleanText = text.replace(/```json/g, "").replace(/```/g, "").trim()
             return JSON.parse(cleanText)
         } catch (error) {
-            console.error("Gemini API Error (Normalization):", error)
+            console.error("OpenRouter API Error (Normalization):", error)
             return { claimantArguments: [], respondentArguments: [] }
         }
     }
 
     // Main Orchestrator
-    public async adjudicateCase(caseData: any): Promise<VerdictResult & { citations: string[]; analysis: any }> {
-        // 1. Normalize Claims
-        const analysis = await this.normalizeClaims(caseData)
+    public async adjudicateCase(caseData: any, judgeModel: string = "google/gemini-2.0-flash-lite-preview", coJudgeModel: string = "google/gemini-2.0-flash-lite-preview"): Promise<VerdictResult & { citations: string[]; analysis: any }> {
+        // 1. Normalize Claims (using Judge Model for consistency)
+        const analysis = await this.normalizeClaims(caseData, judgeModel)
 
-        // 2. Retrieve Context (Guidelines)
-        const context = await this.retrieveContext(caseData.title, caseData.description)
+        // 2. Retrieve Context (RAG + Guidelines)
+        // Combine static guidelines with dynamic RAG retrieval
+        let context = ""
+        try {
+            const guidelinesPath = path.join(process.cwd(), "src/lib/guidelines/standard-rules.md")
+            const guidelines = await fs.readFile(guidelinesPath, "utf-8")
 
-        // 3. Generate Verdict (using Normalized Analysis)
-        const initialVerdict = await this.generateVerdict(context, { ...caseData, analysis })
+            // RAG Retrieval
+            const ragContext = await ragService.retrieveContext(caseData.description + " " + (caseData.respondentDescription || ""))
 
-        // 4. Bias Check
-        const biasCheck = await this.checkBias(initialVerdict.content, initialVerdict.reasoning)
+            context = `
+            Standard Arbitration Rules:
+            ${guidelines}
+
+            Additional Policy Guidelines (RAG Retrieved):
+            ${ragContext}
+            `
+        } catch (error) {
+            console.error("Error reading guidelines:", error)
+            context = "Standard arbitration rules could not be loaded."
+        }
+
+        // 3. Generate Verdict
+        const initialVerdict = await this.generateVerdict(context, { ...caseData, analysis }, judgeModel)
+
+        // 4. Bias Check (Co-Judge)
+        const biasCheck = await this.checkBias(initialVerdict.content, initialVerdict.reasoning, coJudgeModel)
 
         return {
             content: initialVerdict.content,

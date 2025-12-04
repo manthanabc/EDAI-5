@@ -1,12 +1,25 @@
 "use client"
 
-import { useState } from "react"
+import { useState, useEffect } from "react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { toast } from "sonner"
 import { useRouter } from "next/navigation"
-import { Loader2, Bot } from "lucide-react"
+import { Loader2, Bot, Settings2 } from "lucide-react"
+import {
+    Select,
+    SelectContent,
+    SelectItem,
+    SelectTrigger,
+    SelectValue,
+} from "@/components/ui/select"
+import { Label } from "@/components/ui/label"
+import {
+    Collapsible,
+    CollapsibleContent,
+    CollapsibleTrigger,
+} from "@/components/ui/collapsible"
 
 interface Verdict {
     id: string
@@ -24,17 +37,57 @@ interface AIJudgePanelProps {
     mode?: "RESPONDENT" | "ARBITRATOR" | "VIEW"
 }
 
+
+
 export function AIJudgePanel({ caseId, verdicts, status, mode = "VIEW" }: AIJudgePanelProps) {
     const [isLoading, setIsLoading] = useState(false)
     const [description, setDescription] = useState("")
     const [file, setFile] = useState<File | null>(null)
+    const [judgeModel, setJudgeModel] = useState("google/gemini-2.0-flash-lite-preview")
+    const [coJudgeModel, setCoJudgeModel] = useState("google/gemini-2.0-flash-lite-preview")
+    const [availableModels, setAvailableModels] = useState<{ id: string, name: string }[]>([])
+    const [isConfigOpen, setIsConfigOpen] = useState(false)
     const router = useRouter()
+
+    useEffect(() => {
+        const fetchModels = async () => {
+            try {
+                const res = await fetch("/api/admin/settings")
+                if (res.ok) {
+                    const data = await res.json()
+                    if (data.availableModels) {
+                        const models = data.availableModels.split(",").map((m: string) => ({
+                            id: m.trim(),
+                            name: m.trim()
+                        }))
+                        setAvailableModels(models)
+
+                        // Set defaults if configured
+                        if (data.judgeModel) setJudgeModel(data.judgeModel)
+                        if (data.coJudgeModel) setCoJudgeModel(data.coJudgeModel)
+                    } else {
+                        // Fallback defaults
+                        setAvailableModels([
+                            { id: "google/gemini-2.0-flash-lite-preview", name: "Gemini 2.0 Flash Lite" },
+                            { id: "anthropic/claude-3.5-sonnet", name: "Claude 3.5 Sonnet" },
+                            { id: "openai/gpt-4o-mini", name: "GPT-4o Mini" },
+                        ])
+                    }
+                }
+            } catch (error) {
+                console.error("Failed to load models", error)
+            }
+        }
+        fetchModels()
+    }, [])
 
     const handleGenerateVerdict = async () => {
         setIsLoading(true)
         try {
             const response = await fetch(`/api/cases/${caseId}/verdict`, {
                 method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ judgeModel, coJudgeModel }),
             })
 
             if (!response.ok) {
@@ -126,6 +179,50 @@ export function AIJudgePanel({ caseId, verdicts, status, mode = "VIEW" }: AIJudg
                         Generate an AI verdict based on the claims, response, and evidence provided.
                     </p>
                 </div>
+
+                <Collapsible
+                    open={isConfigOpen}
+                    onOpenChange={setIsConfigOpen}
+                    className="w-full max-w-xs space-y-2"
+                >
+                    <div className="flex items-center justify-center">
+                        <CollapsibleTrigger asChild>
+                            <Button variant="ghost" size="sm" className="w-full flex items-center gap-2">
+                                <Settings2 className="h-4 w-4" />
+                                Configure Models
+                            </Button>
+                        </CollapsibleTrigger>
+                    </div>
+                    <CollapsibleContent className="space-y-4 border rounded-md p-4 bg-muted/20">
+                        <div className="space-y-2">
+                            <Label>Judge Model (Verdict)</Label>
+                            <Select value={judgeModel} onValueChange={setJudgeModel}>
+                                <SelectTrigger>
+                                    <SelectValue />
+                                </SelectTrigger>
+                                <SelectContent>
+                                    {availableModels.map((m) => (
+                                        <SelectItem key={m.id} value={m.id}>{m.name}</SelectItem>
+                                    ))}
+                                </SelectContent>
+                            </Select>
+                        </div>
+                        <div className="space-y-2">
+                            <Label>Co-Judge Model (Bias Check)</Label>
+                            <Select value={coJudgeModel} onValueChange={setCoJudgeModel}>
+                                <SelectTrigger>
+                                    <SelectValue />
+                                </SelectTrigger>
+                                <SelectContent>
+                                    {availableModels.map((m) => (
+                                        <SelectItem key={m.id} value={m.id}>{m.name}</SelectItem>
+                                    ))}
+                                </SelectContent>
+                            </Select>
+                        </div>
+                    </CollapsibleContent>
+                </Collapsible>
+
                 <Button onClick={handleGenerateVerdict} disabled={isLoading} size="lg">
                     {isLoading ? (
                         <>

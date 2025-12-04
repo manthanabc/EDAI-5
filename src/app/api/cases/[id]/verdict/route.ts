@@ -26,12 +26,14 @@ export async function POST(
             return NextResponse.json({ message: "Case not found" }, { status: 404 })
         }
 
+        const { judgeModel, coJudgeModel } = await req.json().catch(() => ({}))
+
         // Generate Verdict
-        const result = await aiService.adjudicateCase(caseData)
+        const result = await aiService.adjudicateCase(caseData, judgeModel, coJudgeModel)
 
         if (result.error) {
             return NextResponse.json(
-                { message: "AI Service is currently unavailable. Please try again later." },
+                { message: result.reasoning || "AI Service is currently unavailable." },
                 { status: 503 }
             )
         }

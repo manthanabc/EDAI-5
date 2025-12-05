@@ -90,4 +90,47 @@ export async function POST(
     }
 }
 
+export async function DELETE(
+    req: Request,
+    { params }: { params: Promise<{ id: string }> }
+) {
+    try {
+        const session = await getServerSession(authOptions)
+        const { id } = await params
+
+        if (!session || session.user.role !== "ADMIN") {
+            return NextResponse.json({ message: "Unauthorized" }, { status: 401 })
+        }
+
+        const caseId = id
+
+        // Delete Verdicts
+        await prisma.verdict.deleteMany({
+            where: { caseId }
+        })
+
+        // Reset Case Status
+        await prisma.case.update({
+            where: { id: caseId },
+            data: {
+                status: "AI_REVIEW",
+                auditLogs: {
+                    create: {
+                        action: "VERDICT_RESET",
+                        userId: session.user.id,
+                        details: "Admin reset the verdict for re-evaluation.",
+                    },
+                },
+            },
+        })
+
+        return NextResponse.json({ message: "Verdict reset successfully" })
+    } catch (error) {
+        return NextResponse.json(
+            { message: "Something went wrong" },
+            { status: 500 }
+        )
+    }
+}
+
 export const dynamic = "force-dynamic"

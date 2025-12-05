@@ -9,11 +9,14 @@ import { LayoutDashboard, FileText, Gavel, LogOut, PlusCircle } from "lucide-rea
 
 export default function DashboardLayoutContent({
     children,
+    session: serverSession,
 }: {
     children: React.ReactNode
+    session: any
 }) {
     const pathname = usePathname()
-    const { data: session } = useSession()
+    const { data: clientSession } = useSession()
+    const session = clientSession || serverSession
 
     const routes = [
         {

@@ -1,4 +1,3 @@
-import { GoogleGenerativeAI } from "@google/generative-ai"
 import fs from "fs/promises"
 import path from "path"
 import { ragService } from "./rag-utils"
@@ -75,7 +74,7 @@ export class AIService {
             if (!response.ok) {
                 const errorBody = await response.text()
                 console.error(`OpenRouter API Error (${response.status}):`, errorBody)
-                throw new Error(`OpenRouter API Error: ${response.statusText}`)
+                throw new Error(`OpenRouter API Error: ${response.statusText} - ${errorBody}`)
             }
 
             const data = await response.json()
@@ -84,6 +83,75 @@ export class AIService {
             console.error("Call OpenRouter Failed:", error)
             throw error
         }
+    }
+
+    // Helper to call Google Gemini directly
+    private async callGemini(model: string, messages: any[], temperature: number = 0.7): Promise<string> {
+        await this.getConfig()
+
+        // Use the key that is available (Gemini or OpenRouter/OpenAI var if it looks like a Google key)
+        const apiKey = this.openRouterApiKey.startsWith("AIza") ? this.openRouterApiKey : process.env.GEMINI_API_KEY
+
+        if (!apiKey) {
+            throw new Error("Configuration Missing: Google API Key is missing.")
+        }
+
+        try {
+            const { GoogleGenerativeAI } = await import("@google/generative-ai")
+            const genAI = new GoogleGenerativeAI(apiKey)
+            // Strip prefix if present (e.g. "google/gemini-pro" -> "gemini-pro")
+            const modelName = model.includes("/") ? model.split("/")[1] : model
+            const aiModel = genAI.getGenerativeModel({ model: modelName })
+
+            // Convert messages to Gemini format
+            // Gemini expects a history + last message structure or a single prompt
+            // For simplicity in this specific use case (verdict generation), we'll construct a single prompt
+            // or use the chat history if possible.
+
+            // Simple conversion: Concatenate system prompt and user content
+            const systemMessage = messages.find(m => m.role === "system")?.content || ""
+            const userMessage = messages.find(m => m.role === "user")
+
+            let prompt = systemMessage + "\n\n"
+
+            if (Array.isArray(userMessage.content)) {
+                // Handle multimodal
+                const textPart = userMessage.content.find((c: any) => c.type === "text")?.text || ""
+                prompt += textPart
+
+                // TODO: Handle images for Gemini if needed (requires different API call structure)
+                // For now, we'll stick to text as the primary driver or implement basic image support if critical
+            } else {
+                prompt += userMessage.content
+            }
+
+            const result = await aiModel.generateContent(prompt)
+            const response = await result.response
+            return response.text()
+        } catch (error) {
+            console.error("Call Gemini Failed:", error)
+            throw error
+        }
+    }
+
+    // Unified AI Call
+    private async callAI(model: string, messages: any[], temperature: number = 0.7): Promise<string> {
+        await this.getConfig()
+
+        const key = this.openRouterApiKey.trim()
+        console.log(`[AIService] Calling AI with model: ${model}`)
+        console.log(`[AIService] Key starts with AIza? ${key.startsWith("AIza")}`)
+        console.log(`[AIService] Key length: ${key.length}`)
+
+        // Detect provider based on Key or Model
+        // If key starts with AIza, it's Google.
+        if (key.startsWith("AIza")) {
+            console.log("[AIService] Routing to Gemini")
+            return this.callGemini(model, messages, temperature)
+        }
+
+        console.log("[AIService] Routing to OpenRouter")
+        return this.callOpenRouter(model, messages, temperature)
     }
 
     // Helper to load evidence files for multimodal input (if model supports it - simplified for text-based OpenRouter for now)
@@ -261,7 +329,7 @@ export class AIService {
         `
 
         try {
-            const text = await this.callOpenRouter(model, [{ role: "user", content: prompt }])
+            const text = await this.callAI(model, [{ role: "user", content: prompt }])
             const cleanText = text.replace(/```json/g, "").replace(/```/g, "").trim()
             return JSON.parse(cleanText)
         } catch (error) {
@@ -323,7 +391,7 @@ export class AIService {
                 }
             ]
 
-            const text = await this.callOpenRouter(model, messages)
+            const text = await this.callAI(model, messages)
             const cleanText = text.replace(/```json/g, "").replace(/```/g, "").trim()
             return JSON.parse(cleanText)
         } catch (error) {

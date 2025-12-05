@@ -225,6 +225,7 @@ export default async function CaseDetailPage({ params }: { params: { id: string 
                                 verdicts={caseData.verdicts}
                                 status={caseData.status}
                                 mode="ARBITRATOR"
+                                userRole={session.user.role}
                             />
                         </CardContent>
                     </Card>

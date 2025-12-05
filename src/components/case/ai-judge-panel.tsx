@@ -35,11 +35,10 @@ interface AIJudgePanelProps {
     verdicts: Verdict[]
     status: string
     mode?: "RESPONDENT" | "ARBITRATOR" | "VIEW"
+    userRole?: string
 }
 
-
-
-export function AIJudgePanel({ caseId, verdicts, status, mode = "VIEW" }: AIJudgePanelProps) {
+export function AIJudgePanel({ caseId, verdicts, status, mode = "VIEW", userRole }: AIJudgePanelProps) {
     const [isLoading, setIsLoading] = useState(false)
     const [description, setDescription] = useState("")
     const [file, setFile] = useState<File | null>(null)
@@ -91,13 +90,39 @@ export function AIJudgePanel({ caseId, verdicts, status, mode = "VIEW" }: AIJudg
             })
 
             if (!response.ok) {
-                throw new Error("Failed to generate verdict")
+                const errorData = await response.json()
+                throw new Error(errorData.message || "Failed to generate verdict")
             }
 
             toast.success("AI Verdict generated")
             router.refresh()
         } catch (error) {
-            toast.error("Something went wrong")
+            // @ts-ignore
+            toast.error(error.message || "Something went wrong")
+        } finally {
+            setIsLoading(false)
+        }
+    }
+
+    const handleResetVerdict = async () => {
+        if (!confirm("Are you sure you want to reset this verdict? This action cannot be undone.")) return
+
+        setIsLoading(true)
+        try {
+            const res = await fetch(`/api/cases/${caseId}/verdict`, {
+                method: "DELETE",
+            })
+
+            if (!res.ok) {
+                const errorData = await res.json()
+                throw new Error(errorData.message || "Failed to reset verdict")
+            }
+
+            toast.success("Verdict reset successfully")
+            router.refresh()
+        } catch (error) {
+            // @ts-ignore
+            toast.error(error.message || "Something went wrong")
         } finally {
             setIsLoading(false)
         }
@@ -123,12 +148,16 @@ export function AIJudgePanel({ caseId, verdicts, status, mode = "VIEW" }: AIJudg
                 body: JSON.stringify({ description, documents }),
             })
 
-            if (!res.ok) throw new Error("Failed to submit response")
+            if (!res.ok) {
+                const errorData = await res.json()
+                throw new Error(errorData.message || "Failed to submit response")
+            }
 
             toast.success("Response submitted successfully")
             router.refresh()
         } catch (error) {
-            toast.error("Something went wrong")
+            // @ts-ignore
+            toast.error(error.message || "Something went wrong")
         } finally {
             setIsLoading(false)
         }
@@ -233,6 +262,14 @@ export function AIJudgePanel({ caseId, verdicts, status, mode = "VIEW" }: AIJudg
                         "Generate AI Verdict"
                     )}
                 </Button>
+
+                {userRole === "ADMIN" && verdicts.length > 0 && (
+                    <div className="pt-4 border-t w-full flex justify-center">
+                        <Button variant="destructive" size="sm" onClick={handleResetVerdict} disabled={isLoading}>
+                            Reset Verdict (Admin)
+                        </Button>
+                    </div>
+                )}
             </div>
         )
     }
